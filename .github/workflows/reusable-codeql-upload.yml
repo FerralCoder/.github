@@ -1,0 +1,95 @@
+name: "Reusable CodeQL Upload"
+
+on:
+  workflow_call:
+    inputs:
+      run_id:
+        required: true
+        type: string
+      head_sha:
+        required: true
+        type: string
+      head_branch:
+        required: true
+        type: string
+      event_name:
+        required: true
+        type: string
+      pr_number:
+        required: false
+        type: string
+        default: ""
+
+permissions:
+  actions: read
+  contents: read
+  pull-requests: read
+  security-events: write
+
+jobs:
+  upload:
+    name: Upload SARIF
+    runs-on: ubuntu-latest
+    steps:
+      - name: Resolve target ref and check for SARIF artifacts
+        id: resolve-ref
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          EVENT_NAME: ${{ inputs.event_name }}
+          PR_NUMBER: ${{ inputs.pr_number }}
+          HEAD_SHA: ${{ inputs.head_sha }}
+          HEAD_BRANCH: ${{ inputs.head_branch }}
+          RUN_ID: ${{ inputs.run_id }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          # Nothing to upload (e.g. only unsupported languages): skip cleanly.
+          count=$(gh api "repos/$REPO/actions/runs/$RUN_ID/artifacts" \
+            --jq '[.artifacts[] | select(.name | startswith("sarif-"))] | length')
+          if [ "$count" = "0" ]; then
+            echo "No SARIF artifacts in run $RUN_ID; nothing to upload."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            RESOLVED_PR="$PR_NUMBER"
+            # Fork PRs: workflow_run.pull_requests is empty, so look it up.
+            if [ -z "$RESOLVED_PR" ]; then
+              RESOLVED_PR=$(gh api "repos/$REPO/commits/$HEAD_SHA/pulls" --jq '.[0].number // empty' 2>/dev/null || true)
+            fi
+            if [ -z "$RESOLVED_PR" ]; then
+              RESOLVED_PR=$(gh api --paginate "repos/$REPO/pulls?state=open&per_page=100" \
+                --jq ".[] | select(.head.sha == \"$HEAD_SHA\") | .number" | head -n1 || true)
+            fi
+
+            if [ -z "$RESOLVED_PR" ]; then
+              # Never fall back to a branch ref for PR runs: a fork's branch name
+              # (often "main") would attach foreign results to our branch.
+              echo "::warning::Could not resolve PR for $HEAD_SHA; skipping upload."
+              echo "skip=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            echo "ref=refs/pull/$RESOLVED_PR/head" >> "$GITHUB_OUTPUT"
+          else
+            echo "ref=refs/heads/$HEAD_BRANCH" >> "$GITHUB_OUTPUT"
+          fi
+          echo "skip=false" >> "$GITHUB_OUTPUT"
+
+      - name: Download SARIF artifacts
+        if: steps.resolve-ref.outputs.skip != 'true'
+        uses: actions/download-artifact@v4
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          run-id: ${{ inputs.run_id }}
+          pattern: sarif-*
+          path: results
+
+      - name: Upload SARIF to GitHub
+        if: steps.resolve-ref.outputs.skip != 'true'
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: results
+          sha: ${{ inputs.head_sha }}
+          ref: ${{ steps.resolve-ref.outputs.ref }}

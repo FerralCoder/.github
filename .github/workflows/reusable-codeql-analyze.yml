@@ -1,0 +1,70 @@
+name: "Reusable CodeQL Analyze"
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  # Job 1: Build the CodeQL language matrix from the repo's language stats.
+  # 'actions' (GitHub Actions workflows) is always included since every repo has
+  # at least the CodeQL workflows themselves.
+  create-matrix:
+    name: Detect Languages
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.set-matrix.outputs.matrix }}
+    steps:
+      - name: Build CodeQL language matrix
+        id: set-matrix
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          matrix=$(gh api "repos/$REPO/languages" | jq -c '
+            {
+              "C": "c-cpp", "C++": "c-cpp", "C#": "csharp", "Go": "go",
+              "Java": "java-kotlin", "Kotlin": "java-kotlin",
+              "JavaScript": "javascript-typescript", "TypeScript": "javascript-typescript",
+              "Python": "python", "Ruby": "ruby", "Rust": "rust"
+            } as $m
+            | [keys[] | $m[.] // empty] + ["actions"]
+            | unique
+            | map({language: ., "build-mode": (if . == "go" then "autobuild" else "none" end)})
+            | {include: .}')
+          echo "Matrix: $matrix"
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+
+  # Job 2: Run CodeQL for each language (buildless where supported)
+  analyze:
+    name: Analyze (${{ matrix.language }})
+    needs: create-matrix
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.create-matrix.outputs.matrix) }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: ${{ matrix.build-mode }}
+
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@v3
+        with:
+          category: "/language:${{ matrix.language }}"
+          upload: false
+          output: ../results
+
+      - name: Upload SARIF artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sarif-${{ matrix.language }}
+          path: ../results/*.sarif
+          retention-days: 1
