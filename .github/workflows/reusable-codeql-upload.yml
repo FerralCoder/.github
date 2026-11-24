@@ -79,7 +79,7 @@ jobs:
 
       - name: Download SARIF artifacts
         if: steps.resolve-ref.outputs.skip != 'true'
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           run-id: ${{ inputs.run_id }}
@@ -88,7 +88,7 @@ jobs:
 
       - name: Upload SARIF to GitHub
         if: steps.resolve-ref.outputs.skip != 'true'
-        uses: github/codeql-action/upload-sarif@v3
+        uses: github/codeql-action/upload-sarif@915412ff23e8b7659517e607487dbeae018f2934 # v4.39.5
         with:
           sarif_file: results
           sha: ${{ inputs.head_sha }}
